@@ -782,19 +782,36 @@ def _run_boltz2_refolding_step(config_path: Path) -> None:
 
     design_dir = Path(cfg["design_dir"])
 
-    # Find the target CIF: use the first *_native.cif in the design directory
-    native_cifs = sorted(design_dir.glob("*_native.cif"))
-    if not native_cifs:
-        raise FileNotFoundError(
-            f"No *_native.cif files found in {design_dir}. "
-            "Cannot determine target structure for Boltz-2 refolding."
-        )
-    target_cif = native_cifs[0]
+    # Find the target CIF: prefer explicit target_cif in config, then *_native.cif glob
+    target_cif_str = cfg.get("target_cif")
+    if target_cif_str:
+        target_cif = Path(target_cif_str)
+        if not target_cif.exists():
+            raise FileNotFoundError(
+                f"Configured target_cif not found: {target_cif}"
+            )
+    else:
+        native_cifs = sorted(design_dir.glob("*_native.cif"))
+        if not native_cifs:
+            raise FileNotFoundError(
+                f"No *_native.cif files found in {design_dir} and no target_cif "
+                "specified in config. Cannot determine target structure for "
+                "Boltz-2 refolding."
+            )
+        target_cif = native_cifs[0]
     print(f"Using target structure: {target_cif}")
 
     moldir = cfg.get("moldir")
     if moldir is not None:
         moldir = Path(moldir)
+
+    num_gpus = cfg.get("num_gpus")
+    if num_gpus is not None:
+        num_gpus = int(num_gpus)
+
+    use_msa_server = cfg.get("use_msa_server", True)
+    if isinstance(use_msa_server, str):
+        use_msa_server = use_msa_server.lower() in ("true", "1", "yes")
 
     run_boltz2_refolding(
         design_dir=design_dir,
@@ -803,6 +820,8 @@ def _run_boltz2_refolding_step(config_path: Path) -> None:
         diffusion_samples=int(cfg.get("diffusion_samples", 5)),
         sampling_steps=int(cfg.get("sampling_steps", 200)),
         moldir=moldir,
+        num_gpus=num_gpus,
+        use_msa_server=use_msa_server,
     )
 
 
@@ -1191,6 +1210,8 @@ class BinderDesignPipeline:
         if getattr(args, "use_boltz2_refolding", False):
             # Boltz-2 refolding needs the native CIF as a template
             self.steps[-1].args.append("writer.write_native=true")
+            # Resolve target CIF path: written by check_design_specs to output dir
+            target_cif_path = args.output / (args.design_spec[0].stem + ".cif")
             # Use Boltz-2 CLI for template-enforced refolding
             self.steps.append(
                 PipelineStep(
@@ -1198,6 +1219,7 @@ class BinderDesignPipeline:
                     config_path="__boltz2_bridge__",  # sentinel: not a real config file
                     args=[
                         f"design_dir={input_dir}",
+                        f"target_cif={target_cif_path}",
                         f"template_threshold={args.template_threshold}",
                         f"diffusion_samples={args.boltz2_diffusion_samples}",
                         f"sampling_steps={args.boltz2_sampling_steps}",

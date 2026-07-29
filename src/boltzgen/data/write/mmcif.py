@@ -40,9 +40,16 @@ def to_mmcif(
     chain_to_entity_id = {}
     sequence_to_entity_id = {}
     entity_counter = 1
-    chain_names = [re.sub(r"\d+", "", c["name"]) for c in structure.chains]
-    chain_id_pool = list(reversed(string.ascii_uppercase)) + list(
-        reversed(string.digits)
+    chain_names = [re.sub(r"\d+", "", str(c["name"])) for c in structure.chains]
+    # Pool of single-character chain ids to draw from when a chain's stripped
+    # name is empty (digit-only original names, e.g. glycan chains) or collides
+    # with one already used.  Mirror the 62-char pool used by
+    # Structure.concatenate so >36 chains (e.g. the 35-chain glycosylated HIV
+    # trimer) all receive distinct, non-empty ids.
+    chain_id_pool = (
+        list(string.ascii_uppercase)
+        + list(string.ascii_lowercase)
+        + list(string.digits)
     )
     used_names = []
     old_to_new_chainid = {}
@@ -50,12 +57,22 @@ def to_mmcif(
         old_chainid = chain["name"].item()
 
         new_chainid = re.sub(r"\d+", "", old_chainid)
-        if new_chainid in used_names:
-            # Find next unused chain ID from the pool
+        # Remap when the stripped id is empty (digit-only original name, which
+        # would otherwise emit a blank _struct_asym id and corrupt the mmCIF) or
+        # already taken, so every chain ends up with a distinct, non-empty id.
+        if new_chainid == "" or new_chainid in used_names:
+            new_chainid = ""
             for candidate in chain_id_pool:
                 if candidate not in chain_names and candidate not in used_names:
                     new_chainid = candidate
                     break
+            if new_chainid == "":
+                # All pool candidates collide with existing stripped names;
+                # fall back to any id not yet used so ids stay unique.
+                for candidate in chain_id_pool:
+                    if candidate not in used_names:
+                        new_chainid = candidate
+                        break
         old_to_new_chainid[old_chainid] = new_chainid
         used_names.append(new_chainid)
 
@@ -238,13 +255,15 @@ def to_mmcif(
 
     # Include poly_seq_scheme table
     if poly_seq_scheme:
-        add_poly_seq_scheme_cols(structure, block, chain_to_entity_id, label_seq_dict)
+        add_poly_seq_scheme_cols(
+            structure, block, chain_to_entity_id, label_seq_dict, old_to_new_chainid
+        )
 
     if plddt_cols:
-        add_plddt_cols(structure, block)
+        add_plddt_cols(structure, block, old_to_new_chainid)
 
     if design_coloring:
-        add_design_cols(structure, block, color_features)
+        add_design_cols(structure, block, color_features, old_to_new_chainid)
 
     # remove _chem_comp records because they are empty and then just cause problems with visualization softwares
     block_string = doc.as_string()
@@ -284,7 +303,7 @@ def add_boltzgen_metadata(structure, block, old_to_new_chainid):
             )
 
 
-def add_design_cols(structure, block, colors):
+def add_design_cols(structure, block, colors, old_to_new_chainid):
     plddt_loop = block.init_loop(
         "_ma_qa_metric.",
         [
@@ -311,8 +330,8 @@ def add_design_cols(structure, block, colors):
     plddt_loop = block.init_loop("_ma_qa_metric_local.", plddt_cols)
     global_res_idx = -1
     for chain in structure.chains:
-        chain_name_str = re.sub(r"\d+", "", chain["name"].item())
-        chain_id = chain_name_str
+        # Use the authoritative remap so ids match _atom_site / _struct_asym.
+        chain_id = old_to_new_chainid[chain["name"].item()]
 
         residues = structure.residues[
             chain["res_idx"] : chain["res_idx"] + chain["res_num"]
@@ -337,7 +356,7 @@ def add_design_cols(structure, block, colors):
             )
 
 
-def add_plddt_cols(structure, block):
+def add_plddt_cols(structure, block, old_to_new_chainid):
     plddt_loop = block.init_loop(
         "_ma_qa_metric.",
         [
@@ -366,8 +385,8 @@ def add_plddt_cols(structure, block):
         if chain["mol_type"].item() == const.chain_type_ids["NONPOLYMER"]:
             continue
 
-        chain_name_str = re.sub(r"\d+", "", chain["name"].item())
-        chain_id = chain_name_str
+        # Use the authoritative remap so ids match _atom_site / _struct_asym.
+        chain_id = old_to_new_chainid[chain["name"].item()]
 
         residues = structure.residues[
             chain["res_idx"] : chain["res_idx"] + chain["res_num"]
@@ -392,7 +411,9 @@ def add_plddt_cols(structure, block):
             )
 
 
-def add_poly_seq_scheme_cols(structure, block, chain_to_entity_id, label_seq_dict):
+def add_poly_seq_scheme_cols(
+    structure, block, chain_to_entity_id, label_seq_dict, old_to_new_chainid
+):
     poly_seq_scheme_cols = [
         "asym_id",
         "entity_id",
@@ -412,8 +433,8 @@ def add_poly_seq_scheme_cols(structure, block, chain_to_entity_id, label_seq_dic
         if chain["mol_type"].item() == const.chain_type_ids["NONPOLYMER"]:
             continue
 
-        chain_name_str = re.sub(r"\d+", "", chain["name"].item())
-        chain_id = chain_name_str
+        # Use the authoritative remap so ids match _atom_site / _struct_asym.
+        chain_id = old_to_new_chainid[chain["name"].item()]
         entity_id = chain_to_entity_id[chain_id]
 
         residues = structure.residues[

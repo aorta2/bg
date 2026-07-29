@@ -457,7 +457,7 @@ class Structure(NumpySerializable):
         # Find names for new chains
         names1 = chains_1["name"]
         names2 = chains_2["name"]
-        all_letters = list(string.ascii_uppercase)
+        all_letters = list(string.ascii_uppercase + string.ascii_lowercase + string.digits)
         used_letters = set(names1) | set(names2)
         replacement_iter = (ch for ch in all_letters if ch not in used_letters)
         replacements = {}
